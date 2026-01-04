@@ -1,0 +1,12 @@
+# Ignore image files
+*.png
+*.jpg
+*.jpeg
+
+# （必要なら大文字拡張子も）
+*.PNG
+*.JPG
+*.JPEG
+
+.venv
+backup
