@@ -116,7 +116,17 @@ from PIL import Image, ImageDraw, ImageFont
 # =========================
 logger = logging.getLogger(__name__)
 
-def setup_logging(level: str = "INFO") -> None:
+DEFAULT_LOG_LEVEL = "INFO"
+
+# 終了コード
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+
+USAGE_TEMPLATE = "Usage: python {script} /path/to/input.png"
+
+
+def setup_logging(level: str = DEFAULT_LOG_LEVEL) -> None:
     """
     ログ出力の設定を行います。
     
@@ -130,33 +140,36 @@ def setup_logging(level: str = "INFO") -> None:
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
+
 # =========================
 # 設定管理クラス
 # =========================
 @dataclass(frozen=True)
 class AppConfig:
     """アプリケーションの定数・設定を管理するデータクラス"""
-    
-    # 目標サイズ削減率 (1 - out/in)
-    target_reduction: float = 0.70
-    
-    # 最大試行回数
-    max_tries: int = 5
-    
-    # PNG量子化の色数ステップ
-    palette_colors_steps: List[int] = field(default_factory=lambda: [256, 128, 64, 32, 16])
-    
+
+    # -------------------------
+    # 画像整形（16:9パディング）
+    # -------------------------
+    target_aspect_ratio: float = 16.0 / 9.0
+    aspect_ratio_epsilon: float = 1e-6
+
     # 16:9 拡張の背景色
     pad_bg_color: Tuple[int, int, int] = (255, 255, 255)
-    
-    # タイトル設定
+
+    # -------------------------
+    # タイトル（右上テキスト）
+    # -------------------------
     title_text: str = "Girls' Decadence"
     title_color_rgb: Tuple[int, int, int] = (192, 192, 192)  # シルバー
     title_margin_top: int = 24
     title_margin_right: int = 24
     title_max_width_ratio: float = 0.28
-    
-    # フォント設定
+    title_max_width_min: int = 80
+
+    # -------------------------
+    # フォント
+    # -------------------------
     font_families: List[str] = field(default_factory=lambda: [
         "Cormorant Garamond",
         "Cinzel Decorative",
@@ -165,9 +178,40 @@ class AppConfig:
     ])
     font_size_ratio: float = 0.030
     font_size_min: int = 12
-    
+    font_size_shrink_factor: float = 0.92
+
     # フォールバックフォントパス (Linux環境向け)
     fallback_font_path: str = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+    fallback_font_label: str = "Fallback Font"
+
+    # fontconfig（fc-list）関連
+    fc_list_cmd: Tuple[str, ...] = ("fc-list", ":", "file", "family")
+    font_preferred_style_keywords: Tuple[str, ...] = ("regular", "roman", "book")
+
+    # ランダムシードの設定
+    random_seed_use_timestamp: bool = True
+
+    # -------------------------
+    # PNG圧縮（量子化 + 保存）
+    # -------------------------
+    # 目標サイズ削減率 (1 - out/in)
+    target_reduction: float = 0.70
+
+    # 最大試行回数
+    max_tries: int = 5
+
+    # PNG量子化の色数ステップ
+    palette_colors_steps: List[int] = field(default_factory=lambda: [256, 128, 64, 32, 16])
+
+    # 量子化パラメータ
+    quantize_colors_min: int = 2
+    quantize_colors_max: int = 256
+    quantize_method: int = 2  # PIL quantize: method=2 (Fast Octree)
+
+    # PNG保存パラメータ
+    png_optimize: bool = True
+    png_compress_level: int = 9
+
 
 # =========================
 # ユーティリティ関数
@@ -177,6 +221,7 @@ def now_jst() -> datetime.datetime:
     tz = datetime.timezone(datetime.timedelta(hours=9))
     return datetime.datetime.now(tz=tz)
 
+
 def build_output_path(input_path: Path) -> Path:
     """
     出力ファイルのパスを生成します。
@@ -184,6 +229,7 @@ def build_output_path(input_path: Path) -> Path:
     """
     dt = now_jst().strftime("%Y%m%d_%H%M%S")
     return input_path.parent / f"{dt}_{input_path.name}"
+
 
 # =========================
 # 画像処理クラス
@@ -200,7 +246,7 @@ class ImageProcessor:
             raise FileNotFoundError(f"入力ファイルが見つかりません: {path}")
         if path.suffix.lower() != ".png":
             raise ValueError(f"入力はPNGのみ対応です: {path}")
-        
+
         try:
             return Image.open(path).convert("RGB")
         except Exception as e:
@@ -212,10 +258,10 @@ class ImageProcessor:
         既存の画像はリサイズせず、キャンバスの中央に配置します。
         """
         w, h = img.size
-        target_ratio = 16.0 / 9.0
+        target_ratio = self.config.target_aspect_ratio
         current_ratio = w / float(h)
 
-        if abs(current_ratio - target_ratio) < 1e-6:
+        if abs(current_ratio - target_ratio) < self.config.aspect_ratio_epsilon:
             return img
 
         if current_ratio < target_ratio:
@@ -231,7 +277,7 @@ class ImageProcessor:
         x = (new_w - w) // 2
         y = (new_h - h) // 2
         canvas.paste(img, (x, y))
-        
+
         logger.info(f"16:9 パディング適用: src=({w},{h}) -> dst=({new_w},{new_h})")
         return canvas
 
@@ -242,9 +288,15 @@ class ImageProcessor:
             return []
 
         try:
-            cmd = ["fc-list", ":", "file", "family"]
+            cmd = list(self.config.fc_list_cmd)
             # check=Trueでエラー時に例外を送出させる
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=True)
+            p = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=True,
+            )
             return [line.strip() for line in p.stdout.splitlines() if line.strip()]
         except subprocess.CalledProcessError:
             logger.warning("`fc-list` の実行に失敗しました。")
@@ -257,7 +309,7 @@ class ImageProcessor:
         """指定されたフォミリー名に対応するフォントファイルのパスを検索します。"""
         family_lower = family.lower()
         candidates: List[str] = []
-        
+
         for line in fc_lines:
             if ":" not in line:
                 continue
@@ -270,8 +322,7 @@ class ImageProcessor:
                 continue
 
         # 優先順位: Regular/Roman/Book -> 見つかった最初のもの
-        preferred_styles = ["regular", "roman", "book"]
-        for style in preferred_styles:
+        for style in self.config.font_preferred_style_keywords:
             for f in candidates:
                 if style in Path(f).name.lower():
                     return f
@@ -290,10 +341,17 @@ class ImageProcessor:
 
         if available:
             return random.choice(available)
-        
-        return "Fallback Font", None
 
-    def _fit_font_size(self, draw: ImageDraw.ImageDraw, text: str, font_path: Optional[str], max_w: int, init_size: int) -> ImageFont.FreeTypeFont:
+        return self.config.fallback_font_label, None
+
+    def _fit_font_size(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font_path: Optional[str],
+        max_w: int,
+        init_size: int
+    ) -> ImageFont.FreeTypeFont:
         """指定された幅(max_w)に収まるようにフォントサイズを調整します。"""
         size = max(self.config.font_size_min, int(init_size))
 
@@ -315,11 +373,11 @@ class ImageProcessor:
 
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
-            
+
             if text_width <= max_w:
                 return font
 
-            size = max(self.config.font_size_min, int(size * 0.92))
+            size = max(self.config.font_size_min, int(size * self.config.font_size_shrink_factor))
 
         return ImageFont.load_default()
 
@@ -329,25 +387,26 @@ class ImageProcessor:
         draw = ImageDraw.Draw(out)
 
         # ランダムシードの設定（現在時刻ベース）
-        random.seed(int(now_jst().timestamp()))
+        if self.config.random_seed_use_timestamp:
+            random.seed(int(now_jst().timestamp()))
 
         fam_name, font_path = self._select_random_font()
         logger.info(f"フォント選択: {fam_name} (path={font_path or 'Default'})")
 
         w, _ = out.size
         init_size = max(self.config.font_size_min, int(w * self.config.font_size_ratio))
-        max_w = max(80, int(w * self.config.title_max_width_ratio))
+        max_w = max(self.config.title_max_width_min, int(w * self.config.title_max_width_ratio))
 
         font = self._fit_font_size(draw, self.config.title_text, font_path, max_w, init_size)
 
         bbox = draw.textbbox((0, 0), self.config.title_text, font=font)
         tw = bbox[2] - bbox[0]
-        
+
         x = max(0, w - self.config.title_margin_right - tw)
         y = max(0, self.config.title_margin_top)
 
         draw.text((x, y), self.config.title_text, fill=self.config.title_color_rgb, font=font)
-        
+
         return out
 
     def compress_and_save(self, img: Image.Image, input_path: Path, output_path: Path) -> None:
@@ -363,17 +422,26 @@ class ImageProcessor:
         best_size: int = sys.maxsize
 
         tries = min(self.config.max_tries, len(self.config.palette_colors_steps))
-        
+
         for i in range(tries):
             colors = self.config.palette_colors_steps[i]
-            
-            # 量子化処理 (method=2: Fast Octree)
-            quantized = img.quantize(colors=max(2, min(int(colors), 256)), method=2)
-            
+
+            # 量子化処理
+            colors_i = max(
+                self.config.quantize_colors_min,
+                min(int(colors), self.config.quantize_colors_max),
+            )
+            quantized = img.quantize(colors=colors_i, method=self.config.quantize_method)
+
             with io.BytesIO() as buf:
-                quantized.save(buf, format="PNG", optimize=True, compress_level=9)
+                quantized.save(
+                    buf,
+                    format="PNG",
+                    optimize=self.config.png_optimize,
+                    compress_level=self.config.png_compress_level,
+                )
                 out_bytes = buf.getvalue()
-            
+
             out_size = len(out_bytes)
             reduction = 1.0 - (out_size / float(in_size))
 
@@ -391,13 +459,16 @@ class ImageProcessor:
 
         # 目標未達の場合、最もサイズが小さかったものを保存
         if best_bytes is None:
-             raise RuntimeError("圧縮データの生成に失敗しました。")
+            raise RuntimeError("圧縮データの生成に失敗しました。")
 
         with open(output_path, "wb") as f:
             f.write(best_bytes)
-        
+
         final_reduction = 1.0 - (best_size / float(in_size))
-        logger.warning(f"目標未達: Target={self.config.target_reduction:.1%}, Best={final_reduction:.1%}. 最小サイズで保存しました: {output_path}")
+        logger.warning(
+            f"目標未達: Target={self.config.target_reduction:.1%}, Best={final_reduction:.1%}. "
+            f"最小サイズで保存しました: {output_path}"
+        )
 
 
 # =========================
@@ -405,11 +476,11 @@ class ImageProcessor:
 # =========================
 def main() -> int:
     setup_logging()
-    
+
     # 引数チェック
     if len(sys.argv) != 2:
-        print(f"Usage: python {sys.argv[0]} /path/to/input.png", file=sys.stderr)
-        return 2
+        print(USAGE_TEMPLATE.format(script=sys.argv[0]), file=sys.stderr)
+        return EXIT_USAGE
 
     input_path = Path(sys.argv[1]).resolve()
     config = AppConfig()
@@ -417,16 +488,16 @@ def main() -> int:
 
     try:
         logger.info(f"処理開始: {input_path}")
-        
+
         # 1. ロード
         img = processor.load_image(input_path)
-        
+
         # 2. 16:9 パディング
         img = processor.pad_to_16_9(img)
-        
+
         # 3. タイトル描画
         img = processor.draw_title(img)
-        
+
         # 4. 圧縮保存
         output_path = build_output_path(input_path)
         processor.compress_and_save(img, input_path, output_path)
@@ -437,12 +508,12 @@ def main() -> int:
             in_size = input_path.stat().st_size
             reduction = 1.0 - (out_size / float(in_size))
             logger.info(f"全工程完了: Original={in_size:,} -> Result={out_size:,} ({reduction:.1%} reduction)")
-        
+
     except Exception as e:
         logger.error(f"処理中にエラーが発生しました: {e}", exc_info=True)
-        return 1
+        return EXIT_ERROR
 
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":
