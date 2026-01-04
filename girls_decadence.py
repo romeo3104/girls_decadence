@@ -5,19 +5,20 @@
 girls_decadence.py
 
 【概要】
-単一のPNG画像を入力とし、SNSやWeb媒体向けに「16:9比率へのパディング」「透かし文字（タイトル）の挿入」「ファイルサイズ削減」を一括で行う画像処理スクリプトです。
+単一の PNG 画像（入力は .png のみ）を対象に、SNS / Web掲載向けの体裁へ一括整形するスクリプトです。
+主に「16:9 比率へのパディング（クロップなし）」「右上タイトル文字の描画」「PNG容量削減」を行います。
 
-【このプログラムでできること（処理フロー）】
+【処理フロー】
 1) 入力PNGを読み込み（RGBに変換）
 2) 元画像のアスペクト比を維持したまま、キャンバスを拡張して16:9比率に整形（クロップなし）
-3) 右上にタイトル文字を描画（画像幅に応じてフォントサイズと最大幅を自動調整）
-   - 可能ならシステムフォントから指定ファミリーを探索してランダム選択（fc-list利用）
-   - 見つからない場合はフォールバックフォント（DejaVuSerifなど）を使用
+3) 右上にタイトル文字を描画（画像幅に応じてフォントサイズ・最大幅を自動調整）
+   - `fc-list` が利用可能な場合、システムフォントから指定ファミリーを探索してランダム選択
+   - 見つからない場合はフォールバックフォント（DejaVuSerif等）を使用
 4) PNG量子化（減色）＋高圧縮で保存し、所定のサイズ削減率（目標）を満たすまで色数を段階的に下げて試行
    - 目標未達でも、最も小さくできた結果で保存
 
 【出力ファイル名の仕様】
-出力は入力ファイルと同じディレクトリに生成されます。
+出力は入力ファイルと同じディレクトリに生成されます（上書きしません）。
 形式: YYYYMMDD_HHMMSS_{元ファイル名}
 例: 20260103_235959_input.png
 
@@ -28,74 +29,70 @@ girls_decadence.py
 - 実行例（カレントのPNGを処理）
     python girls_decadence.py ./input.png
 
-【依存ライブラリのインストール方法（Ubuntu 24.04想定）】
-- Pythonライブラリ（必須）
+【依存関係】
+- Python: 3.8以上
+- Pythonライブラリ:
+    pillow (PIL)
+
+  インストール例:
     python3 -m pip install --upgrade pip
     python3 -m pip install pillow
 
-- システムコマンド（推奨：フォント探索に使用）
+- 推奨システムコマンド（フォント探索に使用）:
+    fontconfig（`fc-list` / `fc-cache`）
+
+  インストール例（Ubuntu / Linux Mint）:
     sudo apt-get update
     sudo apt-get install -y fontconfig
 
-- フォント（任意：見栄えを良くしたい場合）
-  ※ 本スクリプトは「Cormorant Garamond / Cinzel Decorative / Playfair Display / Bodoni」を探索します。
-  これらが未導入でも動作しますが、導入すると意図した雰囲気になりやすいです。
+【フォントについて（任意）】
+本スクリプトは、以下のフォントファミリー名を探索対象にします。
 
-  [方法A: ユーザ領域に手動インストール（推奨 / root不要）]
-  1) 事前準備
-    sudo apt-get update
-    sudo apt-get install -y fontconfig unzip
+- Cormorant Garamond
+- Cinzel Decorative
+- Playfair Display
+- Bodoni
 
-  2) フォントをダウンロード（ブラウザでOK）
-     各フォントの Google Fonts のページを開き、右上の「Download family」からZIPを取得します。
-       - Cormorant Garamond: https://fonts.google.com/specimen/Cormorant+Garamond
-       - Cinzel Decorative: https://fonts.google.com/specimen/Cinzel+Decorative
-       - Playfair Display: https://fonts.google.com/specimen/Playfair+Display
-       - Bodoni（代替として Bodoni Moda 推奨）: https://fonts.google.com/specimen/Bodoni+Moda
+注意:
+- fontconfig上の表記揺れにより、例えば「Bodoni」は「Bodoni Moda」として検出される場合があります。
+  本スクリプトの探索は “部分一致” のため、Bodoni Moda を含めた同系統ファミリーも拾う可能性があります。
+- これらが未導入でも動作します（その場合フォールバックフォントを使用します）。
 
-  3) ZIPを展開し、TTFをフォントディレクトリへ配置（root不要）
-    mkdir -p ~/.local/share/fonts/girls-decadence
-    unzip -j ~/Downloads/Cormorant_Garamond.zip '*.ttf' -d ~/.local/share/fonts/girls-decadence
-    unzip -j ~/Downloads/Cinzel_Decorative.zip '*.ttf' -d ~/.local/share/fonts/girls-decadence
-    unzip -j ~/Downloads/Playfair_Display.zip '*.ttf' -d ~/.local/share/fonts/girls-decadence
-    unzip -j ~/Downloads/Bodoni_Moda.zip '*.ttf' -d ~/.local/share/fonts/girls-decadence
+【フォントの自動セットアップ（推奨）】
+同梱/併設の `girls_decadence_font_setup.sh` を使用すると、ユーザ領域（~/.local/share/fonts など）へ
+対象フォントを取得・配置し、fontconfigキャッシュ更新まで自動化できます。
 
-  4) フォントキャッシュ更新と確認
-    fc-cache -f -v
-    fc-list | grep -Ei 'Cormorant Garamond|Cinzel Decorative|Playfair Display|Bodoni'
+- 実行例:
+    chmod +x ./girls_decadence_font_setup.sh
+    ./girls_decadence_font_setup.sh
 
-  [方法B: パッケージマネージャで導入（パッケージ名が環境で異なるため探索してから導入）]
-    sudo apt-get update
-    apt-cache search cormorant | head
-    apt-cache search cinzel | head
-    apt-cache search playfair | head
-    apt-cache search bodoni | head
-    sudo apt-get install -y <見つかったパッケージ名>
+- 検出・反映が不安定な環境では、最終手段として system install を使う版（sudo必要）を用いる運用も可能です:
+    ./girls_decadence_font_setup.sh --system
+
+【手動セットアップ（ネットワーク制限がある場合など）】
+1) 以下のいずれかへ .ttf/.otf を配置:
+   - ~/.local/share/fonts/girls-decadence/
+   - ~/.fonts/girls-decadence/（互換用）
+
+2) fontconfigキャッシュ更新:
     fc-cache -f -v
 
-  [方法C: Google Fonts 全体アーカイブから取得（1GB超 / 非推奨）]
-    curl -L -o google-fonts-main.zip https://github.com/google/fonts/archive/main.zip
-    unzip -q google-fonts-main.zip
-    # 例: 必要なTTFだけを抜き出して配置（ファイル名はリポジトリ内を検索して調整）
-    mkdir -p ~/.local/share/fonts/girls-decadence
-    find google-fonts-main -type f -name '*.ttf' | grep -Ei '(cormorant|cinzel|playfair|bodoni)' | head
-    fc-cache -f -v
-
+3) 検出確認（例）:
+    fc-list ":" file family | grep -Ei 'Cormorant|Cinzel|Playfair|Bodoni|girls-decadence/'
 
 【注意】
 - 入力はPNGのみ対応です（.png以外はエラー）。
-- 透かし文字は右上固定で、テキスト内容は設定クラス AppConfig.title_text で定義されています。
+- 透かし文字（タイトル）は右上固定で、テキスト内容は設定クラス AppConfig.title_text で定義されています。
 - 量子化により、グラデーション等でバンディングが発生する可能性があります（仕様）。
 
 【設計思想】
-- **非破壊的な整形**: 元画像のアスペクト比を維持し、クロップ（切り抜き）を行わずに余白（パディング）で16:9化します。
-- **動的な可読性確保**: 画像サイズに応じてフォントサイズやタイトルの最大幅を動的に計算し、レイアウト崩れを防ぎます。
-- **容量の最適化**: 視覚的な品質を維持しつつ、パレット減色（量子化）を用いて目標の圧縮率（サイズ削減率）達成を試みます。
+- 非破壊的な整形: 元画像のアスペクト比を維持し、クロップ（切り抜き）を行わずに余白（パディング）で16:9化します。
+- 動的な可読性確保: 画像サイズに応じてフォントサイズやタイトル最大幅を動的に計算し、レイアウト崩れを抑えます。
+- 容量の最適化: 視覚品質を維持しつつ、パレット減色（量子化）で目標の圧縮率達成を試みます。
 
 【前提環境】
-- OS: Linux/Unix系（`fc-list`コマンド推奨）
-- Python: 3.8以上
-- ライブラリ: Pillow (PIL)
+- OS: Linux/Unix系（`fc-list` が利用可能だとフォント選択の幅が広がります）
+- Ubuntu 24.04 / Linux Mint 21.x 系での利用を想定（Debian/Ubuntu系のパッケージ管理を前提とした説明を含みます）
 """
 
 from __future__ import annotations
