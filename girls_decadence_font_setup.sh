@@ -1,237 +1,277 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-IFS=$'\n\t'
 
 log() { printf '%s %s\n' "$(date -Is)" "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-MODE="user"            # user|system
-DEST_DIR=""            # empty -> auto
-SKIP_APT=0
-LEGACY_FONTS_FALLBACK=1  # user mode で ~/.fonts も使う（Mint対策）
+# ---- trap で使うテンポラリ（グローバル）----
+GD_TMPDIR=""
 
-usage() {
-  cat <<'EOF'
-Usage:
-  bash girls_decadence_font_setup.sh [--system] [--dest DIR] [--skip-apt] [--no-legacy-fallback]
-
-Options:
-  --system              システム領域にインストール（/usr/local/share/fonts/girls-decadence）
-  --dest DIR            インストール先ディレクトリを明示指定（user/systemどちらでも可）
-  --skip-apt            apt による依存導入をスキップ（git/fontconfig 等が既にある前提）
-  --no-legacy-fallback  user mode でも ~/.fonts を使わない（通常は不要）
-EOF
-}
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --system) MODE="system"; shift ;;
-    --dest) DEST_DIR="${2:-}"; [[ -n "$DEST_DIR" ]] || die "--dest にはDIRが必要です"; shift 2 ;;
-    --skip-apt) SKIP_APT=1; shift ;;
-    --no-legacy-fallback) LEGACY_FONTS_FALLBACK=0; shift ;;
-    -h|--help) usage; exit 0 ;;
-    *) die "不明な引数: $1（-h でヘルプ）" ;;
-  esac
-done
-
-# ---- OS判定（ログ用）----
-OS_NAME="unknown"
-OS_ID="unknown"
-OS_VERSION="unknown"
-if [[ -r /etc/os-release ]]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  OS_NAME="${NAME:-unknown}"
-  OS_ID="${ID:-unknown}"
-  OS_VERSION="${VERSION_ID:-unknown}"
-elif [[ -r /etc/lsb-release ]]; then
-  # shellcheck disable=SC1091
-  . /etc/lsb-release
-  OS_NAME="${DISTRIB_DESCRIPTION:-unknown}"
-  OS_ID="${DISTRIB_ID:-unknown}"
-  OS_VERSION="${DISTRIB_RELEASE:-unknown}"
-fi
-
-log "os=${OS_NAME} (id=${OS_ID}, version=${OS_VERSION})"
-log "mode=${MODE}"
-
-if [[ -z "${DEST_DIR}" ]]; then
-  if [[ "${MODE}" == "system" ]]; then
-    DEST_DIR="/usr/local/share/fonts/girls-decadence"
-  else
-    DEST_DIR="${HOME}/.local/share/fonts/girls-decadence"
+cleanup() {
+  # set -u / set -e の影響を受けないように安全に掃除する
+  set +e
+  if [[ -n "${GD_TMPDIR:-}" && -d "${GD_TMPDIR}" ]]; then
+    rm -rf -- "${GD_TMPDIR}"
   fi
-fi
-log "dest=${DEST_DIR}"
-
-# ---- 依存導入（Mint/Ubuntuとも apt） ----
-if [[ "${SKIP_APT}" -eq 0 ]]; then
-  log "apt: 依存パッケージを導入します（sudoが必要）"
-  sudo apt-get update
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates git fontconfig
-else
-  log "apt: スキップします（既存環境を前提）"
-fi
-
-command -v git >/dev/null 2>&1 || die "git が見つかりません"
-command -v fc-cache >/dev/null 2>&1 || die "fc-cache が見つかりません（fontconfig を導入してください）"
-command -v fc-list >/dev/null 2>&1 || die "fc-list が見つかりません（fontconfig を導入してください）"
-command -v fc-scan >/dev/null 2>&1 || log "WARN: fc-scan が見つかりません（検証が弱くなります）"
-
-TMPDIR="$(mktemp -d)"
-cleanup() { rm -rf "${TMPDIR}"; }
+}
 trap cleanup EXIT
 
-REPO_URL="https://github.com/google/fonts.git"
-REPO_DIR="${TMPDIR}/google-fonts"
-
-log "clone: ${REPO_URL} (sparse)"
-git clone --depth 1 --filter=blob:none --sparse "${REPO_URL}" "${REPO_DIR}" >/dev/null
-cd "${REPO_DIR}"
-
-FONT_DIRS=(
-  "ofl/cormorantgaramond"
-  "ofl/cinzeldecorative"
-  "ofl/playfairdisplay"
-  "ofl/bodonimoda"
-)
-
-log "sparse-checkout: 必要フォントのみ取得"
-git sparse-checkout set "${FONT_DIRS[@]}" >/dev/null
-
-# ---- インストール先作成 ----
-if [[ "${MODE}" == "system" ]]; then
-  log "mkdir: ${DEST_DIR}（sudo）"
-  sudo mkdir -p "${DEST_DIR}"
-else
-  log "mkdir: ${DEST_DIR}"
-  mkdir -p "${DEST_DIR}"
-fi
-
-copy_ttf() {
-  local src="$1"
-  local dst="$2"
-
-  [[ -d "${src}" ]] || die "フォントディレクトリが見つかりません: ${src}（google/fonts の構成変更の可能性）"
-  local count
-  count="$(find "${src}" -type f -name '*.ttf' | wc -l | tr -d ' ')"
-  [[ "${count}" != "0" ]] || die "TTFが見つかりません: ${src}"
-
-  log "copy: ${src} -> ${dst} (${count} files)"
-  if [[ "${MODE}" == "system" ]]; then
-    find "${src}" -type f -name '*.ttf' -print0 | sudo xargs -0 -I{} cp -f {} "${dst}/"
-  else
-    find "${src}" -type f -name '*.ttf' -print0 | xargs -0 -I{} cp -f {} "${dst}/"
+# ---- OS 検出（Ubuntu / Linux Mint想定） ----
+detect_os() {
+  local id="unknown" ver="unknown" pretty="unknown"
+  if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    id="${ID:-unknown}"
+    ver="${VERSION_ID:-unknown}"
+    pretty="${PRETTY_NAME:-unknown}"
+  elif [ -r /etc/lsb-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/lsb-release
+    id="$(echo "${DISTRIB_ID:-unknown}" | tr '[:upper:]' '[:lower:]')"
+    ver="${DISTRIB_RELEASE:-unknown}"
+    pretty="${DISTRIB_DESCRIPTION:-unknown}"
   fi
+  echo "${pretty}|${id}|${ver}"
 }
 
-for d in "${FONT_DIRS[@]}"; do
-  copy_ttf "${REPO_DIR}/${d}" "${DEST_DIR}"
-done
+# ---- 依存パッケージ ----
+ensure_deps() {
+  log "apt: 依存パッケージを導入します（sudoが必要）"
+  sudo apt-get update -y
+  sudo apt-get install -y fontconfig ca-certificates git
+}
 
-# ---- user mode: fontconfig のユーザ設定を「fonts.conf」で強制的に有効化（Mint対策）----
-# ※ 既存 fonts.conf がある場合は上書きしない（conf.d 方式が効く環境もあるため）
-install_user_fontconfig() {
-  local base="${HOME}/.config/fontconfig"
-  local fonts_conf="${base}/fonts.conf"
-  local confd="${base}/conf.d"
-  local snippet="${confd}/99-girls-decadence.conf"
+# ---- fontconfig キャッシュクリア（ユーザ）----
+clear_user_fontconfig_cache() {
+  log "fontconfig: clear caches"
+  rm -rf "${HOME}/.cache/fontconfig" "${HOME}/.fontconfig" 2>/dev/null || true
+  fc-cache -r >/dev/null 2>&1 || true
+  fc-cache -f -v >/dev/null 2>&1 || true
+}
 
-  mkdir -p "${confd}"
-
-  # conf.d スニペット（効く環境ではこれだけでOK）
-  cat > "${snippet}" <<'EOF'
+# ---- user 側の drop-in（conf.d）を作る（探索パスを明示して確実化）----
+ensure_user_fontconfig_dropin() {
+  local d="${HOME}/.config/fontconfig/conf.d"
+  local conf="${d}/99-girls-decadence.conf"
+  mkdir -p "${d}"
+  log "fontconfig: installed user snippet: ${conf}"
+  cat > "${conf}" <<'EOFCONF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
-  <dir>~/.local/share/fonts</dir>
+  <!-- Girls' Decadence fonts -->
   <dir>~/.local/share/fonts/girls-decadence</dir>
-  <dir>~/.fonts</dir>
+  <dir>~/.fonts/girls-decadence</dir>
 </fontconfig>
-EOF
+EOFCONF
+}
 
-  # Mint等で「conf.d が読まれない/読まれにくい」場合に備えて fonts.conf を作る（無ければ）
-  if [[ ! -f "${fonts_conf}" ]]; then
-    log "fontconfig: create user fonts.conf: ${fonts_conf}"
-    cat > "${fonts_conf}" <<'EOF'
+# ---- system 側の fontconfig drop-in を作る（探索パスを明示して確実化）----
+ensure_system_fontconfig_dropin() {
+  local conf="/etc/fonts/conf.d/99-girls-decadence.conf"
+  log "fontconfig: install system drop-in: ${conf}（sudo）"
+  sudo tee "${conf}" >/dev/null <<'EOFCONF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
-  <!-- User font dirs (Ubuntu 24.04 / Linux Mint 21.x compatible) -->
-  <dir>~/.local/share/fonts</dir>
-  <dir>~/.local/share/fonts/girls-decadence</dir>
-  <dir>~/.fonts</dir>
+  <!-- Girls' Decadence fonts -->
+  <dir>/usr/local/share/fonts/girls-decadence</dir>
+  <dir>/usr/share/fonts/truetype/girls-decadence</dir>
 </fontconfig>
-EOF
-  else
-    log "fontconfig: user fonts.conf exists; keep as-is: ${fonts_conf}"
-    log "fontconfig: installed conf.d snippet: ${snippet}"
-  fi
+EOFCONF
 }
 
-# ---- 検証関数（プログラムと同じ fc-list 形式）----
-verify_fonts() {
-  # Bodoni は実体が Bodoni Moda でも部分一致で拾える前提（プログラム仕様）
-  local pat='Cormorant[[:space:]]*Garamond|Cinzel[[:space:]]*Decorative|Playfair[[:space:]]*Display|Bodoni'
-  fc-list : file family 2>/dev/null | grep -Eiq "${pat}"
+# ---- Google Fonts を sparse-checkout で取得 ----
+clone_google_fonts_sparse() {
+  local tmpdir="$1"
+  local repo="${tmpdir}/google-fonts"
+  log "clone: https://github.com/google/fonts.git (sparse)"
+
+  # 環境差を吸収（depth+filter が失敗したらフォールバック）
+  if ! git clone --depth 1 --filter=blob:none --no-checkout https://github.com/google/fonts.git "${repo}" >/dev/null 2>&1; then
+    git clone --filter=blob:none --no-checkout https://github.com/google/fonts.git "${repo}" >/dev/null
+  fi
+
+  pushd "${repo}" >/dev/null
+  git sparse-checkout init --cone >/dev/null
+  log "sparse-checkout: 必要フォントのみ取得"
+  git sparse-checkout set \
+    ofl/cormorantgaramond \
+    ofl/cinzeldecorative \
+    ofl/playfairdisplay \
+    ofl/bodonimoda >/dev/null
+  git checkout >/dev/null
+  popd >/dev/null
+  echo "${repo}"
 }
 
-# ---- fontconfig キャッシュ再生成 ----
-log "fontconfig: clear user cache"
-rm -rf "${HOME}/.cache/fontconfig" 2>/dev/null || true
-rm -rf "${HOME}/.fontconfig" 2>/dev/null || true
+# ---- TTF コピー（固定）----
+copy_ttf_from() {
+  local srcdir="$1"
+  local dstdir="$2"
+  mkdir -p "${dstdir}"
+  local n=0
+  while IFS= read -r -d '' f; do
+    cp -f "${f}" "${dstdir}/"
+    n=$((n+1))
+  done < <(find "${srcdir}" -maxdepth 1 -type f \( -iname '*.ttf' -o -iname '*.otf' \) -print0)
+  log "copy: ${srcdir} -> ${dstdir} (${n} files)"
+}
 
-if [[ "${MODE}" == "user" ]]; then
-  install_user_fontconfig
-fi
+# ---- “インストール確認” ：ファミリー名＋別形式＋パス断片を許容 ----
+verify_fonts_any() {
+  local family_pat
+  family_pat='Cormorant[[:space:]]+Garamond|Cinzel[[:space:]]+Decorative|Playfair[[:space:]]+Display|Bodoni([[:space:]]+Moda)?'
+  local path_pat
+  path_pat='girls-decadence/'
 
-log "fc-cache: rebuild"
-if [[ "${MODE}" == "system" ]]; then
-  sudo fc-cache -f -v >/dev/null
-else
-  fc-cache -f -v >/dev/null
-fi
+  local out
 
-log "verify: fc-list : file family | grep"
-if verify_fonts; then
-  log "OK: 主要フォントが検出されました（プログラムが拾える状態です）"
-  log "done: ${DEST_DIR}"
-  exit 0
-fi
+  # 1) プログラムが使う形式（fc-list ":" file family）
+  out="$(fc-list ":" file family 2>/dev/null || true)"
+  if grep -Eiq "$family_pat" <<<"$out"; then return 0; fi
+  if grep -Eiq "$path_pat" <<<"$out"; then return 0; fi
 
-# ---- user mode fallback: ~/.fonts にも置く（Mintで効きやすい）----
-if [[ "${MODE}" == "user" && "${LEGACY_FONTS_FALLBACK}" -eq 1 ]]; then
-  LEGACY_DIR="${HOME}/.fonts/girls-decadence"
-  log "fallback: install to legacy dir: ${LEGACY_DIR}"
-  mkdir -p "${LEGACY_DIR}"
+  # 2) ふつうの形式（fc-list）
+  out="$(fc-list 2>/dev/null || true)"
+  if grep -Eiq "$family_pat" <<<"$out"; then return 0; fi
+  if grep -Eiq "$path_pat" <<<"$out"; then return 0; fi
 
-  # symlink で重複回避（古い環境でも読みやすい）
-  shopt -s nullglob
-  for f in "${DEST_DIR}"/*.ttf; do
-    ln -sf "${f}" "${LEGACY_DIR}/$(basename "${f}")"
-  done
-  shopt -u nullglob
+  return 1
+}
 
-  rm -rf "${HOME}/.cache/fontconfig" 2>/dev/null || true
-  fc-cache -f -v "${HOME}/.fonts" >/dev/null || true
-  fc-cache -f -v >/dev/null || true
+verify_program_style() { verify_fonts_any; }
+verify_doc_style() { verify_fonts_any; }
 
-  log "verify(after legacy): fc-list : file family | grep"
-  if verify_fonts; then
-    log "OK: ~/.fonts フォールバック後に主要フォントが検出されました"
-    log "done: ${DEST_DIR}"
-    exit 0
+show_matches_brief() {
+  (fc-list ":" file family 2>/dev/null || true) \
+    | grep -Ei 'Cormorant[[:space:]]+Garamond|Cinzel[[:space:]]+Decorative|Playfair[[:space:]]+Display|Bodoni|girls-decadence/' \
+    | head -n 20 >&2 || true
+}
+
+# ---- 実行モード ----
+MODE="user" # user|system
+if [ "${1:-}" = "--system" ]; then MODE="system"; fi
+
+main() {
+  local osinfo; osinfo="$(detect_os)"
+  local pretty="${osinfo%%|*}"; local rest="${osinfo#*|}"
+  local id="${rest%%|*}"; local ver="${rest#*|}"
+
+  log "os=${pretty} (id=${id}, version=${ver})"
+  log "mode=${MODE}"
+  log "env(before): FONTCONFIG_FILE=${FONTCONFIG_FILE-} FONTCONFIG_PATH=${FONTCONFIG_PATH-} FONTCONFIG_SYSROOT=${FONTCONFIG_SYSROOT-} XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"
+
+  export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+  ensure_deps
+
+  local pre_cnt
+  pre_cnt="$(fc-list 2>/dev/null | wc -l || true)"
+  log "health: fc-list total fonts (pre)=${pre_cnt}"
+
+  clear_user_fontconfig_cache
+
+  local post_cnt
+  post_cnt="$(fc-list 2>/dev/null | wc -l || true)"
+  log "health: fc-list total fonts (post-reset)=${post_cnt}"
+
+  GD_TMPDIR="$(mktemp -d)"
+
+  local repo; repo="$(clone_google_fonts_sparse "${GD_TMPDIR}")"
+
+  local user_dest="${HOME}/.local/share/fonts/girls-decadence"
+  local legacy_dest="${HOME}/.fonts/girls-decadence"
+  local sys_dest="/usr/local/share/fonts/girls-decadence"
+  local sys_last="/usr/share/fonts/truetype/girls-decadence"
+
+  log "dest=${user_dest}"
+
+  # ---- user install ----
+  copy_ttf_from "${repo}/ofl/cormorantgaramond" "${user_dest}"
+  copy_ttf_from "${repo}/ofl/cinzeldecorative" "${user_dest}"
+  copy_ttf_from "${repo}/ofl/playfairdisplay" "${user_dest}"
+  copy_ttf_from "${repo}/ofl/bodonimoda" "${user_dest}"
+
+  ensure_user_fontconfig_dropin
+  clear_user_fontconfig_cache
+
+  log "fc-cache: rebuild (user)"
+  fc-cache -f -v >/dev/null 2>&1 || true
+
+  log "verify: fc-list (family/path, both formats)"
+  if verify_program_style || verify_doc_style; then
+    log "ok: detected (user)"
+    show_matches_brief
+    log "done: ${user_dest}"
+    return 0
   fi
-fi
 
-# ---- ここまで来たら: フォントファイル自体はあるが、fontconfig が拾えていない ----
-log "WARN: fc-list で主要フォントが検出できませんでした（fontconfig 側の個別調査が必要）"
-log "diag: fc-scan で family を確認（参考）"
-if command -v fc-scan >/dev/null 2>&1; then
-  fc-scan --format '%{file}\t%{family}\t%{style}\n' "${DEST_DIR}"/*.ttf | head -n 80 >&2 || true
-fi
-log "hint: 最終手段として system install を使用してください:"
-log "hint:   bash ./girls_decadence_font_setup.sh --system"
-exit 1
+  # ---- legacy dir fallback ----
+  log "fallback: install to legacy dir: ${legacy_dest}"
+  copy_ttf_from "${repo}/ofl/cormorantgaramond" "${legacy_dest}"
+  copy_ttf_from "${repo}/ofl/cinzeldecorative" "${legacy_dest}"
+  copy_ttf_from "${repo}/ofl/playfairdisplay" "${legacy_dest}"
+  copy_ttf_from "${repo}/ofl/bodonimoda" "${legacy_dest}"
+
+  clear_user_fontconfig_cache
+  fc-cache -f -v >/dev/null 2>&1 || true
+
+  log "verify(after legacy): fc-list (family/path, both formats)"
+  if verify_program_style || verify_doc_style; then
+    log "ok: detected (legacy user dir)"
+    show_matches_brief
+    log "done: ${legacy_dest}"
+    return 0
+  fi
+
+  # ---- system install fallback ----
+  if [ "${MODE}" = "user" ]; then
+    log "WARN: user install では検出できません。system install に切替えます（sudo）"
+  fi
+
+  log "system: install to ${sys_dest}"
+  sudo mkdir -p "${sys_dest}"
+  sudo cp -f "${user_dest}"/* "${sys_dest}/" 2>/dev/null || true
+  sudo cp -f "${legacy_dest}"/* "${sys_dest}/" 2>/dev/null || true
+
+  ensure_system_fontconfig_dropin
+
+  log "fc-cache: rebuild (system)"
+  sudo fc-cache -f -v >/dev/null 2>&1 || true
+  fc-cache -f -v >/dev/null 2>&1 || true
+
+  log "verify: fc-list (family/path, both formats)"
+  if verify_program_style || verify_doc_style; then
+    log "ok: detected (system)"
+    show_matches_brief
+    log "done: ${sys_dest}"
+    return 0
+  fi
+
+  # ---- last resort: /usr/share/fonts/truetype ----
+  log "system(last resort): install to ${sys_last}"
+  sudo mkdir -p "${sys_last}"
+  sudo cp -f "${sys_dest}"/* "${sys_last}/" 2>/dev/null || true
+
+  sudo fc-cache -f -v >/dev/null 2>&1 || true
+  fc-cache -f -v >/dev/null 2>&1 || true
+
+  if verify_program_style || verify_doc_style; then
+    log "ok: detected (system last resort)"
+    show_matches_brief
+    log "done: ${sys_last}"
+    return 0
+  fi
+
+  log "ERROR: system install（/usr/local, /usr/share）でも fc-list に出ませんでした（fontconfig の個別調査が必要）"
+  log "diag: fc-list head（参考）"
+  fc-list 2>/dev/null | head -n 10 >&2 || true
+  log "diag: fc-list \":\" file family head（参考）"
+  fc-list ":" file family 2>/dev/null | head -n 10 >&2 || true
+  exit 1
+}
+
+main "$@"
 
