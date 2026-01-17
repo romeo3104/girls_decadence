@@ -198,7 +198,7 @@ class AppConfig:
     target_reduction: float = 0.70
 
     # 最大試行回数
-    max_tries: int = 5
+    max_tries: int = 10
 
     # PNG量子化の色数ステップ
     palette_colors_steps: List[int] = field(default_factory=lambda: [256, 128, 64, 32, 16])
