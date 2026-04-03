@@ -730,12 +730,14 @@ class CompressionOptimizer:
         dither_label: str,
         dither: int,
     ) -> Optional[CompressionCandidate]:
-        """二分探索で品質閾値を満たす最小色数の候補を返します。"""
+        """二分探索で品質閾値を満たす最小色数の候補を返します。
+        strict候補が見つからない場合は、最も品質差分が小さい候補をフォールバックとして返します。"""
         if not steps:
             return None
 
         lo, hi = 0, len(steps) - 1
-        best_candidate: Optional[CompressionCandidate] = None
+        best_strict: Optional[CompressionCandidate] = None
+        best_fallback: Optional[CompressionCandidate] = None
 
         while lo <= hi:
             mid = (lo + hi) // 2
@@ -745,18 +747,39 @@ class CompressionOptimizer:
             candidate = self._try_quantize_candidate(reference_img, working_img, colors, method, dither, label)
 
             if candidate is not None and self.quality_judge.is_strictly_acceptable(candidate):
-                # 品質OK — より少ない色数を試す（より小さいサイズを狙う）
-                if best_candidate is not None:
-                    object.__setattr__(best_candidate, "out_bytes", b"")
-                best_candidate = candidate
+                if best_strict is not None:
+                    object.__setattr__(best_strict, "out_bytes", b"")
+                best_strict = candidate
                 hi = mid - 1
             else:
-                # 品質NG — より多い色数を試す
                 if candidate is not None:
-                    object.__setattr__(candidate, "out_bytes", b"")
+                    # strict不合格でも、フォールバック候補として最も品質が良いものを保持
+                    if best_fallback is None or candidate.rms_diff < best_fallback.rms_diff:
+                        if best_fallback is not None:
+                            object.__setattr__(best_fallback, "out_bytes", b"")
+                        best_fallback = candidate
+                    else:
+                        object.__setattr__(candidate, "out_bytes", b"")
                 lo = mid + 1
 
-        return best_candidate
+        if best_strict is not None:
+            if best_fallback is not None:
+                object.__setattr__(best_fallback, "out_bytes", b"")
+            return best_strict
+
+        # strict候補なし — 最大色数(256)でも試してフォールバックを補強
+        max_colors = steps[-1]
+        max_label = f"{method_label}_{dither_label}_{max_colors}_FALLBACK"
+        max_candidate = self._try_quantize_candidate(reference_img, working_img, max_colors, method, dither, max_label)
+        if max_candidate is not None:
+            if best_fallback is None or max_candidate.rms_diff < best_fallback.rms_diff:
+                if best_fallback is not None:
+                    object.__setattr__(best_fallback, "out_bytes", b"")
+                best_fallback = max_candidate
+            else:
+                object.__setattr__(max_candidate, "out_bytes", b"")
+
+        return best_fallback
 
     def _try_quantize_candidate(
         self,
