@@ -100,6 +100,7 @@ girls_decadence.py
 
 from __future__ import annotations
 
+import atexit
 import datetime
 import io
 import logging
@@ -249,7 +250,7 @@ def now_jst() -> datetime.datetime:
 
 def build_output_path(input_path: Path) -> Path:
     """出力ファイルパスを生成します。"""
-    dt = now_jst().strftime("%Y%m%d_%H%M%S")
+    dt = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     return input_path.parent / f"{dt}_{input_path.name}"
 
 
@@ -329,7 +330,7 @@ class FontResolver:
         """初期設定を保持します。"""
         self.config = config
 
-    def get_random_font(self) -> Tuple[str, Optional[str]]:
+    def get_random_font(self, rng: random.Random) -> Tuple[str, Optional[str]]:
         """利用可能フォントからランダムに1つ返します。"""
         fc_lines = self._get_font_candidates()
         available_fonts: List[Tuple[str, str]] = []
@@ -340,7 +341,7 @@ class FontResolver:
                 available_fonts.append((family, font_path))
 
         if available_fonts:
-            return random.choice(available_fonts)
+            return rng.choice(available_fonts)
 
         return self.config.fallback_font_label, None
 
@@ -354,15 +355,17 @@ class FontResolver:
     ) -> ImageFont.ImageFont:
         """指定幅に収まるフォントを返します。"""
         size = max(self.config.font_size_min, int(initial_size))
+        prev_size = size + 1
 
-        while size >= self.config.font_size_min:
+        while size >= self.config.font_size_min and size < prev_size:
             font = self._load_font(font_path, size)
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
             if text_width <= max_width:
                 return font
 
-            size = max(self.config.font_size_min, int(size * self.config.font_size_shrink_factor))
+            prev_size = size
+            size = int(size * self.config.font_size_shrink_factor)
 
         return ImageFont.load_default()
 
@@ -443,9 +446,11 @@ class TitleRenderer:
         draw = ImageDraw.Draw(out)
 
         if self.config.random_seed_use_timestamp:
-            random.seed(int(now_jst().timestamp()))
+            rng = random.Random(int(now_jst().timestamp()))
+        else:
+            rng = random.Random()
 
-        family_name, font_path = self.font_resolver.get_random_font()
+        family_name, font_path = self.font_resolver.get_random_font(rng)
         logger.info("フォント選択: %s (path=%s)", family_name, font_path or "Default")
 
         width, _ = out.size
@@ -690,7 +695,7 @@ class CompressionOptimizer:
         return previous_best, previous_profile_label, previous_direct_candidate, executed_passes
 
     def _generate_candidates(self, reference_img: Image.Image, working_img: Image.Image) -> List[CompressionCandidate]:
-        """圧縮候補を全件生成します。"""
+        """圧縮候補を全件生成します。最適候補以外の out_bytes は解放します。"""
         candidates: List[CompressionCandidate] = []
 
         direct_candidate = self._build_candidate(reference_img, working_img, "RGB_DIRECT_SAVE")
@@ -702,6 +707,7 @@ class CompressionOptimizer:
             for method_label, method in self._get_quantize_methods():
                 for dither_label, dither in self._get_dither_modes():
                     if self.config.max_tries > 0 and trial_count >= self.config.max_tries:
+                        self._trim_candidate_bytes(candidates)
                         return candidates
                     trial_count += 1
 
@@ -714,7 +720,17 @@ class CompressionOptimizer:
                     if candidate is not None:
                         candidates.append(candidate)
 
+        self._trim_candidate_bytes(candidates)
         return candidates
+
+    def _trim_candidate_bytes(self, candidates: List[CompressionCandidate]) -> None:
+        """最小サイズ候補とDIRECT候補以外の out_bytes を空にしてメモリを解放します。"""
+        if len(candidates) <= 2:
+            return
+        best_idx = min(range(len(candidates)), key=lambda i: candidates[i].out_size)
+        for i, c in enumerate(candidates):
+            if i != best_idx and c.label != "RGB_DIRECT_SAVE":
+                object.__setattr__(c, "out_bytes", b"")
 
     def _decode_candidate_bytes(self, image_bytes: bytes) -> Image.Image:
         """PNGバイト列を RGB 画像へ戻します。"""
@@ -821,12 +837,13 @@ class CompressionOptimizer:
         input_size: int,
     ) -> Tuple[CompressionCandidate, str]:
         """視覚品質優先で最適候補を選択します。"""
-        strict_candidates = [candidate for candidate in candidates if self.quality_judge.is_strictly_acceptable(candidate)]
-        relaxed_candidates = [candidate for candidate in candidates if self.quality_judge.is_relaxed_acceptable(candidate)]
+        live = [c for c in candidates if c.out_bytes]
+        strict_candidates = [c for c in live if self.quality_judge.is_strictly_acceptable(c)]
+        relaxed_candidates = [c for c in live if self.quality_judge.is_relaxed_acceptable(c)]
 
-        strict_best = min(strict_candidates, key=lambda candidate: candidate.out_size) if strict_candidates else None
-        relaxed_best = min(relaxed_candidates, key=lambda candidate: candidate.out_size) if relaxed_candidates else None
-        direct_candidate = self._find_direct_candidate(candidates)
+        strict_best = min(strict_candidates, key=lambda c: c.out_size) if strict_candidates else None
+        relaxed_best = min(relaxed_candidates, key=lambda c: c.out_size) if relaxed_candidates else None
+        direct_candidate = self._find_direct_candidate(live)
 
         if strict_best is not None:
             strict_reduction = 1.0 - (strict_best.out_size / float(input_size))
@@ -843,7 +860,7 @@ class CompressionOptimizer:
         if relaxed_best is not None:
             return relaxed_best, "RELAXED_FALLBACK"
 
-        return min(candidates, key=lambda candidate: candidate.out_size), "MIN_SIZE_FALLBACK"
+        return min(live, key=lambda c: c.out_size), "MIN_SIZE_FALLBACK"
 
     def _find_direct_candidate(self, candidates: Sequence[CompressionCandidate]) -> Optional[CompressionCandidate]:
         """直接保存候補を返します。"""
@@ -930,6 +947,18 @@ def main() -> int:
     output_path = build_output_path(input_path)
     processor = ImageProcessor(AppConfig())
 
+    completed = False
+
+    def _cleanup_on_exit() -> None:
+        if not completed and output_path.exists():
+            try:
+                output_path.unlink()
+                logger.info("中断により不完全な出力ファイルを削除しました: %s", output_path)
+            except OSError:
+                pass
+
+    atexit.register(_cleanup_on_exit)
+
     try:
         logger.info("処理開始: %s", input_path)
         processor.process(input_path, output_path)
@@ -939,6 +968,8 @@ def main() -> int:
             in_size = input_path.stat().st_size
             reduction = 1.0 - (out_size / float(in_size))
             logger.info("全工程完了: Original=%s -> Result=%s (%.1f%% reduction)", f"{in_size:,}", f"{out_size:,}", reduction * 100.0)
+
+        completed = True
 
     except Exception as e:
         logger.error("処理中にエラーが発生しました: %s", e, exc_info=True)
