@@ -206,6 +206,7 @@ class AppConfig:
     iterative_recompression_enabled: bool = True
     iterative_max_passes: int = 20
     iterative_min_improvement_bytes: int = 1
+    iterative_min_improvement_ratio: float = 0.005
 
 
 @dataclass(frozen=True)
@@ -671,12 +672,13 @@ class CompressionOptimizer:
                 f"{improvement_bytes:,}",
             )
 
-            if improvement_bytes < self.config.iterative_min_improvement_bytes:
+            improvement_ratio = improvement_bytes / float(previous_best.out_size) if previous_best.out_size > 0 else 0.0
+            if improvement_bytes < self.config.iterative_min_improvement_bytes or improvement_ratio < self.config.iterative_min_improvement_ratio:
                 logger.info(
-                    "反復圧縮停止: パス %s でこれ以上縮小できませんでした。閾値=%s bytes, 実改善=%s bytes",
+                    "反復圧縮停止: パス %s でこれ以上縮小できませんでした。改善=%s bytes (%.2f%%)",
                     pass_index,
-                    self.config.iterative_min_improvement_bytes,
                     improvement_bytes,
+                    improvement_ratio * 100.0,
                 )
                 return previous_best, previous_profile_label or profile_label, previous_direct_candidate, pass_index - 1
 
@@ -695,33 +697,81 @@ class CompressionOptimizer:
         return previous_best, previous_profile_label, previous_direct_candidate, executed_passes
 
     def _generate_candidates(self, reference_img: Image.Image, working_img: Image.Image) -> List[CompressionCandidate]:
-        """圧縮候補を全件生成します。最適候補以外の out_bytes は解放します。"""
+        """二分探索で各量子化手法の最小許容色数を求め、候補を効率的に生成します。"""
         candidates: List[CompressionCandidate] = []
 
         direct_candidate = self._build_candidate(reference_img, working_img, "RGB_DIRECT_SAVE")
         if direct_candidate is not None:
             candidates.append(direct_candidate)
 
-        trial_count = 0
-        for colors in self._iter_palette_steps():
-            for method_label, method in self._get_quantize_methods():
-                for dither_label, dither in self._get_dither_modes():
-                    if self.config.max_tries > 0 and trial_count >= self.config.max_tries:
-                        self._trim_candidate_bytes(candidates)
-                        return candidates
-                    trial_count += 1
+        steps = sorted(set(
+            max(self.config.quantize_colors_min, min(int(c), self.config.quantize_colors_max))
+            for c in self.config.palette_colors_steps
+        ))
 
-                    label = f"{method_label}_{dither_label}_{colors}"
-                    quantized = self._quantize_image(working_img, colors, method, dither, label)
-                    if quantized is None:
-                        continue
-
-                    candidate = self._build_candidate(reference_img, quantized, label)
-                    if candidate is not None:
-                        candidates.append(candidate)
+        for method_label, method in self._get_quantize_methods():
+            for dither_label, dither in self._get_dither_modes():
+                best_for_combo = self._binary_search_colors(
+                    reference_img, working_img, steps, method_label, method, dither_label, dither,
+                )
+                if best_for_combo is not None:
+                    candidates.append(best_for_combo)
 
         self._trim_candidate_bytes(candidates)
         return candidates
+
+    def _binary_search_colors(
+        self,
+        reference_img: Image.Image,
+        working_img: Image.Image,
+        steps: List[int],
+        method_label: str,
+        method: int,
+        dither_label: str,
+        dither: int,
+    ) -> Optional[CompressionCandidate]:
+        """二分探索で品質閾値を満たす最小色数の候補を返します。"""
+        if not steps:
+            return None
+
+        lo, hi = 0, len(steps) - 1
+        best_candidate: Optional[CompressionCandidate] = None
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            colors = steps[mid]
+            label = f"{method_label}_{dither_label}_{colors}"
+
+            candidate = self._try_quantize_candidate(reference_img, working_img, colors, method, dither, label)
+
+            if candidate is not None and self.quality_judge.is_strictly_acceptable(candidate):
+                # 品質OK — より少ない色数を試す（より小さいサイズを狙う）
+                if best_candidate is not None:
+                    object.__setattr__(best_candidate, "out_bytes", b"")
+                best_candidate = candidate
+                hi = mid - 1
+            else:
+                # 品質NG — より多い色数を試す
+                if candidate is not None:
+                    object.__setattr__(candidate, "out_bytes", b"")
+                lo = mid + 1
+
+        return best_candidate
+
+    def _try_quantize_candidate(
+        self,
+        reference_img: Image.Image,
+        working_img: Image.Image,
+        colors: int,
+        method: int,
+        dither: int,
+        label: str,
+    ) -> Optional[CompressionCandidate]:
+        """量子化して候補を生成します。"""
+        quantized = self._quantize_image(working_img, colors, method, dither, label)
+        if quantized is None:
+            return None
+        return self._build_candidate(reference_img, quantized, label)
 
     def _trim_candidate_bytes(self, candidates: List[CompressionCandidate]) -> None:
         """最小サイズ候補とDIRECT候補以外の out_bytes を空にしてメモリを解放します。"""
