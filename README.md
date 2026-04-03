@@ -1,8 +1,8 @@
-# girls_decadence_pngquant_refactored.py
+# girls_decadence.py
 
 ## 概要
 
-`girls_decadence_pngquant_refactored.py` は、単一の PNG 画像を対象に、次の処理を一括で実行する Linux 向けの Python スクリプトです。
+`girls_decadence.py` は、単一の PNG 画像を対象に、次の処理を一括で実行する Linux 向けの Python スクリプトです。
 
 1. 入力 PNG を読み込む
 2. 元画像をクロップせずに 16:9 比率へパディングする
@@ -88,7 +88,7 @@ python3 -m pip install pillow
 ### 実行権限を付与する場合
 
 ```bash
-chmod +x ./girls_decadence_pngquant_refactored.py
+chmod +x ./girls_decadence.py
 ```
 
 ---
@@ -98,19 +98,19 @@ chmod +x ./girls_decadence_pngquant_refactored.py
 ### 基本
 
 ```bash
-python3 girls_decadence_pngquant_refactored.py /path/to/input.png
+python3 girls_decadence.py /path/to/input.png
 ```
 
 ### カレントディレクトリの画像を処理する例
 
 ```bash
-python3 girls_decadence_pngquant_refactored.py ./input.png
+python3 girls_decadence.py ./input.png
 ```
 
 ### 実行権限付きで実行する例
 
 ```bash
-./girls_decadence_pngquant_refactored.py /path/to/input.png
+./girls_decadence.py /path/to/input.png
 ```
 
 ---
@@ -230,7 +230,7 @@ python3 -m pip install pillow
 
 ```text
 .
-├── girls_decadence_pngquant_refactored.py
+├── girls_decadence.py
 ├── README.md
 └── input.png
 ```
@@ -248,7 +248,7 @@ python3 -m pip install pillow
 実行:
 
 ```bash
-python3 girls_decadence_pngquant_refactored.py ./sample.png
+python3 girls_decadence.py ./sample.png
 ```
 
 出力例:
@@ -261,4 +261,4 @@ python3 girls_decadence_pngquant_refactored.py ./sample.png
 
 ## 補足
 
-この README は、`girls_decadence_pngquant_refactored.py` の現在の実装内容に合わせて作成しています。仕様変更を行った場合は、`AppConfig`、CLI 引数、依存コマンド、出力仕様に差分がないか確認したうえで README も更新してください。
+この README は、`girls_decadence.py` の現在の実装内容に合わせて作成しています。仕様変更を行った場合は、`AppConfig`、CLI 引数、依存コマンド、出力仕様に差分がないか確認したうえで README も更新してください。
