@@ -141,8 +141,6 @@ verify_fonts_any() {
   return 1
 }
 
-verify_program_style() { verify_fonts_any; }
-verify_doc_style() { verify_fonts_any; }
 
 show_matches_brief() {
   (fc-list ":" file family 2>/dev/null || true) \
@@ -152,7 +150,11 @@ show_matches_brief() {
 
 # ---- 実行モード ----
 MODE="user" # user|system
-if [ "${1:-}" = "--system" ]; then MODE="system"; fi
+if [ "${1:-}" = "--system" ]; then
+  MODE="system"
+elif [ -n "${1:-}" ]; then
+  die "Unknown option: $1 (usage: $0 [--system])"
+fi
 
 main() {
   local osinfo; osinfo="$(detect_os)"
@@ -201,7 +203,7 @@ main() {
   fc-cache -f -v >/dev/null 2>&1 || true
 
   log "verify: fc-list (family/path, both formats)"
-  if verify_program_style || verify_doc_style; then
+  if verify_fonts_any; then
     log "ok: detected (user)"
     show_matches_brief
     log "done: ${user_dest}"
@@ -219,7 +221,7 @@ main() {
   fc-cache -f -v >/dev/null 2>&1 || true
 
   log "verify(after legacy): fc-list (family/path, both formats)"
-  if verify_program_style || verify_doc_style; then
+  if verify_fonts_any; then
     log "ok: detected (legacy user dir)"
     show_matches_brief
     log "done: ${legacy_dest}"
@@ -243,7 +245,7 @@ main() {
   fc-cache -f -v >/dev/null 2>&1 || true
 
   log "verify: fc-list (family/path, both formats)"
-  if verify_program_style || verify_doc_style; then
+  if verify_fonts_any; then
     log "ok: detected (system)"
     show_matches_brief
     log "done: ${sys_dest}"
@@ -258,7 +260,7 @@ main() {
   sudo fc-cache -f -v >/dev/null 2>&1 || true
   fc-cache -f -v >/dev/null 2>&1 || true
 
-  if verify_program_style || verify_doc_style; then
+  if verify_fonts_any; then
     log "ok: detected (system last resort)"
     show_matches_brief
     log "done: ${sys_last}"
