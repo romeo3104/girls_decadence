@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-girls_decadence.py
+girls_decadence_pngquant.py
 
 【概要】
 単一の PNG 画像（入力は .png のみ）を対象に、SNS / Web掲載向けの体裁へ一括整形するスクリプトです。
-主に「16:9 比率へのパディング（クロップなし）」「右上タイトル文字の描画」「PNG容量削減」を行います。
+主に「16:9 比率へのパディング（クロップなし）」「右上タイトル文字の描画」「pngquant によるPNG容量削減」を行います。
 
 【処理フロー】
 1) 入力PNGを読み込み（RGBに変換）
@@ -14,22 +14,23 @@ girls_decadence.py
 3) 右上にタイトル文字を描画（画像幅に応じてフォントサイズ・最大幅を自動調整）
    - `fc-list` が利用可能な場合、システムフォントから指定ファミリーを探索してランダム選択
    - 見つからない場合はフォールバックフォント（DejaVuSerif等）を使用
-4) PNG量子化（減色）＋高圧縮で保存し、視覚品質を極端に崩さない範囲で最小サイズ候補を採用
-   - 目標削減率に達しても探索を打ち切らず、最後まで比較します
-5) 圧縮後PNGを再入力として再圧縮し、これ以上サイズが縮まらなくなるまで反復します
-   - 16:9化とタイトル描画は最初の1回だけ行い、反復対象はPNG圧縮のみです
+4) 一時PNGを生成し、以下の pngquant コマンド相当で圧縮します
+   - `pngquant --quality=80-95 --speed 1 --strip --output output.png --force -- input.png`
+5) 圧縮後PNGを再入力として再度 pngquant を実行し、前回より 1 バイト以上小さくならなくなるまで反復します
+   - 16:9化とタイトル描画は最初の1回だけ行い、反復対象は pngquant 圧縮のみです
+6) 最終結果を入力画像と同じディレクトリへ、元プログラムと同じ命名規則で保存します
 
 【出力ファイル名の仕様】
 出力は入力ファイルと同じディレクトリに生成されます（上書きしません）。
-形式: YYYYMMDD_HHMMSS_{元ファイル名}
-例: 20260103_235959_input.png
+形式: YYYYMMDD_HHMMSS_ffffff_{元ファイル名}
+例: 20260103_235959_123456_input.png
 
 【使用方法】
 - 1ファイル処理（入力はPNGのみ）
-    python girls_decadence.py /path/to/input.png
+    python girls_decadence_pngquant.py /path/to/input.png
 
 - 実行例（カレントのPNGを処理）
-    python girls_decadence.py ./input.png
+    python girls_decadence_pngquant.py ./input.png
 
 【依存関係】
 - Python: 3.8以上
@@ -40,80 +41,47 @@ girls_decadence.py
     python3 -m pip install --upgrade pip
     python3 -m pip install pillow
 
-- 推奨システムコマンド（フォント探索に使用）:
+- 推奨システムコマンド:
     fontconfig（`fc-list` / `fc-cache`）
+    pngquant
 
   インストール例（Ubuntu / Linux Mint）:
     sudo apt-get update
-    sudo apt-get install -y fontconfig
-
-【フォントについて（任意）】
-本スクリプトは、以下のフォントファミリー名を探索対象にします。
-
-- Cormorant Garamond
-- Cinzel Decorative
-- Playfair Display
-- Bodoni
-
-注意:
-- fontconfig上の表記揺れにより、例えば「Bodoni」は「Bodoni Moda」として検出される場合があります。
-  本スクリプトの探索は “部分一致” のため、Bodoni Moda を含めた同系統ファミリーも拾う可能性があります。
-- これらが未導入でも動作します（その場合フォールバックフォントを使用します）。
-
-【フォントの自動セットアップ（推奨）】
-同梱/併設の `girls_decadence_font_setup.sh` を使用すると、ユーザ領域（~/.local/share/fonts など）へ
-対象フォントを取得・配置し、fontconfigキャッシュ更新まで自動化できます。
-
-- 実行例:
-    chmod +x ./girls_decadence_font_setup.sh
-    ./girls_decadence_font_setup.sh
-
-- 検出・反映が不安定な環境では、最終手段として system install を使う版（sudo必要）を用いる運用も可能です:
-    ./girls_decadence_font_setup.sh --system
-
-【手動セットアップ（ネットワーク制限がある場合など）】
-1) 以下のいずれかへ .ttf/.otf を配置:
-   - ~/.local/share/fonts/girls-decadence/
-   - ~/.fonts/girls-decadence/（互換用）
-
-2) fontconfigキャッシュ更新:
-    fc-cache -f -v
-
-3) 検出確認（例）:
-    fc-list ":" file family | grep -Ei 'Cormorant|Cinzel|Playfair|Bodoni|girls-decadence/'
+    sudo apt-get install -y fontconfig pngquant
 
 【注意】
 - 入力はPNGのみ対応です（.png以外はエラー）。
 - 透かし文字（タイトル）は右上固定で、テキスト内容は設定クラス AppConfig.title_text で定義されています。
 - 圧縮は「前回結果より1バイト以上小さくならない」時点で停止します。
-- 量子化により、グラデーション等でバンディングが発生する可能性があります（仕様）。
+- pngquant は非可逆圧縮です。色数削減によりグラデーション等で差が出る可能性があります。
+- `pngquant --quality=80-95` の制約上、この品質条件を満たせない画像では終了コードが非0になる可能性があります。
 
 【設計思想】
 - 非破壊的な整形: 元画像のアスペクト比を維持し、クロップ（切り抜き）を行わずに余白（パディング）で16:9化します。
 - 動的な可読性確保: 画像サイズに応じてフォントサイズやタイトル最大幅を動的に計算し、レイアウト崩れを抑えます。
-- 容量の最適化: 視覚品質を維持しつつ、パレット減色（量子化）で圧縮効率を引き上げます。
+- 容量の最適化: pngquant を同一条件で反復実行し、縮小が止まるまで圧縮します。
 
 【前提環境】
-- OS: Linux/Unix系（`fc-list` が利用可能だとフォント選択の幅が広がります）
-- Ubuntu 24.04 / Linux Mint 21.x 系での利用を想定（Debian/Ubuntu系のパッケージ管理を前提とした説明を含みます）
+- OS: Linux/Unix系（`fc-list` と `pngquant` が利用可能だと本来の動作になります）
+- Ubuntu 24.04 / Linux Mint 21.x 系での利用を想定
 """
 
 from __future__ import annotations
 
 import atexit
 import datetime
-import io
 import logging
 import math
 import random
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageStat, features
+from PIL import Image, ImageDraw, ImageFont
 
 # =========================
 # ロギング設定
@@ -173,61 +141,15 @@ class AppConfig:
     random_seed_use_timestamp: bool = True
 
     # -------------------------
-    # PNG圧縮（量子化 + 保存）
+    # pngquant 圧縮
     # -------------------------
-    target_reduction: float = 0.70
-    max_tries: int = 0  # 0 以下の場合は候補を全件探索します
-    palette_colors_steps: List[int] = field(default_factory=lambda: [
-        256, 224, 192, 160, 128, 112, 96, 80, 64, 56, 48, 40, 32, 24, 16, 12, 10, 8
-    ])
-    quantize_colors_min: int = 8
-    quantize_colors_max: int = 256
-    quantize_method: int = 2
-    quantize_enable_libimagequant: bool = True
-    quantize_use_dither: bool = True
-    quantize_try_without_dither: bool = True
-
-    # 厳格モード: ほぼ視認できない差分のみ許容
-    max_mean_abs_diff: float = 1.10
-    max_rms_diff: float = 2.20
-    max_large_diff_ratio: float = 0.0030
-
-    # 拡張モード: 既定では使用しません。
-    # 人間の目で分かる劣化を避ける要件を優先するため、通常選定は strict のみです。
-    relaxed_max_mean_abs_diff: float = 1.80
-    relaxed_max_rms_diff: float = 3.60
-    relaxed_max_large_diff_ratio: float = 0.0100
-    enable_relaxed_profile: bool = False
-
-    large_diff_threshold: int = 8
-
-    png_optimize: bool = True
-    png_compress_level: int = 9
+    pngquant_cmd: str = "pngquant"
+    pngquant_quality: str = "80-95"
+    pngquant_speed: str = "1"
+    pngquant_strip: bool = True
     iterative_recompression_enabled: bool = True
-    iterative_max_passes: int = 20
+    iterative_max_passes: int = 50
     iterative_min_improvement_bytes: int = 1
-    iterative_min_improvement_ratio: float = 0.005
-
-
-@dataclass(frozen=True)
-class CompressionCandidate:
-    """1件の圧縮候補を保持します。"""
-
-    label: str
-    out_bytes: bytes
-    out_size: int
-    mean_abs_diff: float
-    rms_diff: float
-    large_diff_ratio: float
-
-
-@dataclass(frozen=True)
-class VisualThresholds:
-    """視覚差分の閾値を表します。"""
-
-    mean_abs_diff: float
-    rms_diff: float
-    large_diff_ratio: float
 
 
 # =========================
@@ -243,21 +165,18 @@ def setup_logging(level: str = DEFAULT_LOG_LEVEL) -> None:
     )
 
 
+
 def now_jst() -> datetime.datetime:
     """現在の日時（JST）を取得します。"""
     tz = datetime.timezone(datetime.timedelta(hours=9))
     return datetime.datetime.now(tz=tz)
 
 
+
 def build_output_path(input_path: Path) -> Path:
     """出力ファイルパスを生成します。"""
     dt = now_jst().strftime("%Y%m%d_%H%M%S_%f")
     return input_path.parent / f"{dt}_{input_path.name}"
-
-
-def img_supports_mediancut_rgb() -> bool:
-    """RGB画像では MEDIANCUT/MAXCOVERAGE が利用可能である前提を返します。"""
-    return True
 
 
 # =========================
@@ -476,511 +395,140 @@ class TitleRenderer:
 
 
 # =========================
-# 差分評価とPNG保存
+# pngquant 圧縮
 # =========================
-class PngEncoder:
-    """PNG保存とビット深度最適化を担当します。"""
+class PngQuantCompressor:
+    """pngquant を用いた反復圧縮を担当します。"""
 
     def __init__(self, config: AppConfig):
         """初期設定を保持します。"""
         self.config = config
 
-    def save_png_bytes(self, image: Image.Image) -> bytes:
-        """PNGバイト列を返します。"""
-        save_kwargs = {
-            "format": "PNG",
-            "optimize": self.config.png_optimize,
-            "compress_level": self.config.png_compress_level,
-        }
-
-        png_bits = self._get_png_bits(image)
-        if png_bits is not None:
-            save_kwargs["bits"] = png_bits
-
-        with io.BytesIO() as buffer:
-            image.save(buffer, **save_kwargs)
-            return buffer.getvalue()
-
-    def _get_png_bits(self, image: Image.Image) -> Optional[int]:
-        """P モード画像のビット深度を最小化します。"""
-        if image.mode != "P":
-            return None
-
-        colors = image.getcolors(maxcolors=self.config.quantize_colors_max)
-        color_count = len(colors) if colors is not None else self.config.quantize_colors_max
-
-        if color_count <= 2:
-            return 1
-        if color_count <= 4:
-            return 2
-        if color_count <= 16:
-            return 4
-        return 8
-
-
-class VisualQualityJudge:
-    """候補画像の視覚差分測定と閾値判定を担当します。"""
-
-    def __init__(self, config: AppConfig):
-        """閾値設定を保持します。"""
-        self.strict_thresholds = VisualThresholds(
-            mean_abs_diff=config.max_mean_abs_diff,
-            rms_diff=config.max_rms_diff,
-            large_diff_ratio=config.max_large_diff_ratio,
-        )
-        self.relaxed_thresholds = VisualThresholds(
-            mean_abs_diff=config.relaxed_max_mean_abs_diff,
-            rms_diff=config.relaxed_max_rms_diff,
-            large_diff_ratio=config.relaxed_max_large_diff_ratio,
-        )
-        self.large_diff_threshold = config.large_diff_threshold
-
-    def measure_visual_difference(self, original: Image.Image, candidate_bytes: bytes) -> Tuple[float, float, float]:
-        """元画像と候補画像の差分を数値化します。"""
-        try:
-            with Image.open(io.BytesIO(candidate_bytes)) as candidate_image:
-                candidate = candidate_image.convert("RGB")
-        except Exception as e:
-            raise RuntimeError(f"候補画像の再読込に失敗しました: {e}") from e
-
-        if candidate.size != original.size:
-            raise RuntimeError(
-                f"候補画像サイズが不一致です: original={original.size}, candidate={candidate.size}"
+    def compress_and_save(self, img: Image.Image, input_path: Path, output_path: Path) -> None:
+        """整形済み画像を一時保存し、pngquant 反復圧縮後に最終保存します。"""
+        if not shutil.which(self.config.pngquant_cmd):
+            raise FileNotFoundError(
+                f"`{self.config.pngquant_cmd}` コマンドが見つかりません。`sudo apt-get install -y pngquant` を確認してください。"
             )
 
-        diff = ImageChops.difference(original, candidate)
-        stat = ImageStat.Stat(diff)
-
-        mean_values = stat.mean
-        rms_values = stat.rms
-        mean_abs_diff = sum(mean_values) / float(len(mean_values)) if mean_values else 0.0
-        rms_diff = sum(rms_values) / float(len(rms_values)) if rms_values else 0.0
-
-        histogram = diff.histogram()
-        total_pixels = original.size[0] * original.size[1]
-        if total_pixels <= 0:
-            raise RuntimeError("画像サイズが不正です。")
-
-        channels = max(1, len(histogram) // 256)
-        large_count = 0
-        for channel_index in range(channels):
-            offset = channel_index * 256
-            large_count += sum(histogram[offset + self.large_diff_threshold: offset + 256])
-
-        large_diff_ratio = large_count / float(total_pixels * channels)
-        return mean_abs_diff, rms_diff, large_diff_ratio
-
-    def is_strictly_acceptable(self, candidate: CompressionCandidate) -> bool:
-        """厳格閾値で許容可能か判定します。"""
-        return self._matches_thresholds(candidate, self.strict_thresholds)
-
-    def is_relaxed_acceptable(self, candidate: CompressionCandidate) -> bool:
-        """緩和閾値で許容可能か判定します。"""
-        return self._matches_thresholds(candidate, self.relaxed_thresholds)
-
-    def _matches_thresholds(self, candidate: CompressionCandidate, thresholds: VisualThresholds) -> bool:
-        """指定閾値に収まるかを判定します。"""
-        return (
-            candidate.mean_abs_diff <= thresholds.mean_abs_diff
-            and candidate.rms_diff <= thresholds.rms_diff
-            and candidate.large_diff_ratio <= thresholds.large_diff_ratio
-        )
-
-
-# =========================
-# 圧縮候補生成と選定
-# =========================
-class CompressionOptimizer:
-    """圧縮候補の生成、評価、選定、反復圧縮、保存を担当します。"""
-
-    def __init__(self, config: AppConfig, png_encoder: PngEncoder, quality_judge: VisualQualityJudge):
-        """依存サービスを保持します。"""
-        self.config = config
-        self.png_encoder = png_encoder
-        self.quality_judge = quality_judge
-
-    def compress_and_save(self, img: Image.Image, input_path: Path, output_path: Path) -> None:
-        """圧縮候補を生成し、必要に応じて再圧縮を繰り返して最終結果を保存します。"""
         input_size = input_path.stat().st_size
         if input_size == 0:
             raise ValueError("入力ファイルのサイズが0です。")
 
-        best_candidate, profile_label, direct_candidate, pass_count = self._optimize_iteratively(img, input_size)
+        with tempfile.TemporaryDirectory(prefix="girls_decadence_pngquant_") as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            seed_path = temp_dir / "seed.png"
 
-        with open(output_path, "wb") as file_obj:
-            file_obj.write(best_candidate.out_bytes)
+            try:
+                img.save(seed_path, format="PNG")
+            except Exception as e:
+                raise RuntimeError(f"一時PNGの保存に失敗しました: {e}") from e
 
-        self._log_selection_result(
-            input_size=input_size,
-            output_path=output_path,
-            best_candidate=best_candidate,
-            profile_label=profile_label,
-            direct_candidate=direct_candidate,
-            pass_count=pass_count,
+            best_path, pass_count = self._compress_iteratively(seed_path)
+            shutil.copy2(best_path, output_path)
+
+        out_size = output_path.stat().st_size
+        reduction = 1.0 - (out_size / float(input_size))
+        logger.info(
+            "圧縮完了: input=%s bytes, output=%s bytes, reduction=%.2f%%, passes=%s, output=%s",
+            f"{input_size:,}",
+            f"{out_size:,}",
+            reduction * 100.0,
+            pass_count,
+            output_path,
         )
 
-    def _optimize_iteratively(
-        self,
-        reference_img: Image.Image,
-        input_size: int,
-    ) -> Tuple[CompressionCandidate, str, Optional[CompressionCandidate], int]:
-        """初回圧縮後、サイズが縮まらなくなるまで再圧縮を繰り返します。"""
-        current_img = reference_img
-        previous_best: Optional[CompressionCandidate] = None
-        previous_profile_label: Optional[str] = None
-        previous_direct_candidate: Optional[CompressionCandidate] = None
+    def _compress_iteratively(self, seed_path: Path) -> Tuple[Path, int]:
+        """前回よりサイズが縮まらなくなるまで pngquant を反復実行します。"""
+        current_path = seed_path
+        current_size = seed_path.stat().st_size
         executed_passes = 0
 
         max_passes = max(1, int(self.config.iterative_max_passes))
+        if not self.config.iterative_recompression_enabled:
+            max_passes = 1
 
         for pass_index in range(1, max_passes + 1):
-            baseline_size = input_size if previous_best is None else previous_best.out_size
-            candidates = self._generate_candidates(reference_img, current_img)
-            if not candidates:
-                raise RuntimeError("利用可能な圧縮候補を生成できませんでした。")
+            output_path = seed_path.parent / f"pass_{pass_index:03d}.png"
+            self._run_pngquant(current_path, output_path)
 
-            best_candidate, profile_label = self._select_best_candidate(candidates, baseline_size)
-            direct_candidate = self._find_direct_candidate(candidates)
+            if not output_path.is_file():
+                raise RuntimeError(f"pngquant の出力ファイルが生成されませんでした: {output_path}")
+
+            new_size = output_path.stat().st_size
+            improvement_bytes = current_size - new_size
+            improvement_ratio = (improvement_bytes / float(current_size) * 100.0) if current_size > 0 else 0.0
+
+            logger.info(
+                "圧縮パス %s: before=%s bytes, after=%s bytes, improvement=%s bytes (%.4f%%)",
+                pass_index,
+                f"{current_size:,}",
+                f"{new_size:,}",
+                f"{improvement_bytes:,}",
+                improvement_ratio,
+            )
+
+            if improvement_bytes < self.config.iterative_min_improvement_bytes:
+                logger.info(
+                    "反復圧縮停止: パス %s で改善が 0 バイト以下になりました。",
+                    pass_index,
+                )
+                output_path.unlink(missing_ok=True)
+                break
+
+            current_path = output_path
+            current_size = new_size
             executed_passes = pass_index
 
-            if previous_best is None:
-                logger.info(
-                    "圧縮パス %s: 初回選定 %s [%s] size=%s bytes",
-                    pass_index,
-                    best_candidate.label,
-                    profile_label,
-                    f"{best_candidate.out_size:,}",
-                )
-                previous_best = best_candidate
-                previous_profile_label = profile_label
-                previous_direct_candidate = direct_candidate
+        if executed_passes == 0:
+            logger.info("反復圧縮の結果、初回入力が最終採用されました。")
+            return seed_path, 0
 
-                if not self.config.iterative_recompression_enabled:
-                    return previous_best, previous_profile_label, previous_direct_candidate, executed_passes
+        return current_path, executed_passes
 
-                current_img = self._decode_candidate_bytes(best_candidate.out_bytes)
-                continue
+    def _run_pngquant(self, input_path: Path, output_path: Path) -> None:
+        """指定条件で pngquant を1回実行します。"""
+        cmd = [
+            self.config.pngquant_cmd,
+            f"--quality={self.config.pngquant_quality}",
+            "--speed",
+            self.config.pngquant_speed,
+        ]
 
-            improvement_bytes = previous_best.out_size - best_candidate.out_size
-            logger.info(
-                "圧縮パス %s: selected=%s [%s] size=%s bytes, previous=%s bytes, improvement=%s bytes",
-                pass_index,
-                best_candidate.label,
-                profile_label,
-                f"{best_candidate.out_size:,}",
-                f"{previous_best.out_size:,}",
-                f"{improvement_bytes:,}",
-            )
+        if self.config.pngquant_strip:
+            cmd.append("--strip")
 
-            improvement_ratio = improvement_bytes / float(previous_best.out_size) if previous_best.out_size > 0 else 0.0
-            if improvement_bytes < self.config.iterative_min_improvement_bytes or improvement_ratio < self.config.iterative_min_improvement_ratio:
-                logger.info(
-                    "反復圧縮停止: パス %s でこれ以上縮小できませんでした。改善=%s bytes (%.2f%%)",
-                    pass_index,
-                    improvement_bytes,
-                    improvement_ratio * 100.0,
-                )
-                return previous_best, previous_profile_label or profile_label, previous_direct_candidate, pass_index - 1
+        cmd.extend([
+            "--output",
+            str(output_path),
+            "--force",
+            "--",
+            str(input_path),
+        ])
 
-            previous_best = best_candidate
-            previous_profile_label = profile_label
-            previous_direct_candidate = direct_candidate
-            current_img = self._decode_candidate_bytes(best_candidate.out_bytes)
+        logger.info("pngquant 実行: %s", " ".join(cmd))
 
-        logger.warning(
-            "反復圧縮は最大パス数に到達しました: max_passes=%s",
-            max_passes,
-        )
-        if previous_best is None or previous_profile_label is None:
-            raise RuntimeError("反復圧縮結果が取得できませんでした。")
-
-        return previous_best, previous_profile_label, previous_direct_candidate, executed_passes
-
-    def _generate_candidates(self, reference_img: Image.Image, working_img: Image.Image) -> List[CompressionCandidate]:
-        """二分探索で各量子化手法の最小許容色数を求め、候補を効率的に生成します。"""
-        candidates: List[CompressionCandidate] = []
-
-        direct_candidate = self._build_candidate(reference_img, working_img, "RGB_DIRECT_SAVE")
-        if direct_candidate is not None:
-            candidates.append(direct_candidate)
-
-        steps = sorted(set(
-            max(self.config.quantize_colors_min, min(int(c), self.config.quantize_colors_max))
-            for c in self.config.palette_colors_steps
-        ))
-
-        for method_label, method in self._get_quantize_methods():
-            for dither_label, dither in self._get_dither_modes():
-                best_for_combo = self._binary_search_colors(
-                    reference_img, working_img, steps, method_label, method, dither_label, dither,
-                )
-                if best_for_combo is not None:
-                    candidates.append(best_for_combo)
-
-        self._trim_candidate_bytes(candidates)
-        return candidates
-
-    def _binary_search_colors(
-        self,
-        reference_img: Image.Image,
-        working_img: Image.Image,
-        steps: List[int],
-        method_label: str,
-        method: int,
-        dither_label: str,
-        dither: int,
-    ) -> Optional[CompressionCandidate]:
-        """二分探索で品質閾値を満たす最小色数の候補を返します。
-        strict候補が見つからない場合は、最も品質差分が小さい候補をフォールバックとして返します。"""
-        if not steps:
-            return None
-
-        lo, hi = 0, len(steps) - 1
-        best_strict: Optional[CompressionCandidate] = None
-        best_fallback: Optional[CompressionCandidate] = None
-
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            colors = steps[mid]
-            label = f"{method_label}_{dither_label}_{colors}"
-
-            candidate = self._try_quantize_candidate(reference_img, working_img, colors, method, dither, label)
-
-            if candidate is not None and self.quality_judge.is_strictly_acceptable(candidate):
-                if best_strict is not None:
-                    object.__setattr__(best_strict, "out_bytes", b"")
-                best_strict = candidate
-                hi = mid - 1
-            else:
-                if candidate is not None:
-                    # strict不合格でも、フォールバック候補として最も品質が良いものを保持
-                    if best_fallback is None or candidate.rms_diff < best_fallback.rms_diff:
-                        if best_fallback is not None:
-                            object.__setattr__(best_fallback, "out_bytes", b"")
-                        best_fallback = candidate
-                    else:
-                        object.__setattr__(candidate, "out_bytes", b"")
-                lo = mid + 1
-
-        if best_strict is not None:
-            if best_fallback is not None:
-                object.__setattr__(best_fallback, "out_bytes", b"")
-            return best_strict
-
-        # strict候補なし — 最大色数(256)でも試してフォールバックを補強
-        max_colors = steps[-1]
-        max_label = f"{method_label}_{dither_label}_{max_colors}_FALLBACK"
-        max_candidate = self._try_quantize_candidate(reference_img, working_img, max_colors, method, dither, max_label)
-        if max_candidate is not None:
-            if best_fallback is None or max_candidate.rms_diff < best_fallback.rms_diff:
-                if best_fallback is not None:
-                    object.__setattr__(best_fallback, "out_bytes", b"")
-                best_fallback = max_candidate
-            else:
-                object.__setattr__(max_candidate, "out_bytes", b"")
-
-        return best_fallback
-
-    def _try_quantize_candidate(
-        self,
-        reference_img: Image.Image,
-        working_img: Image.Image,
-        colors: int,
-        method: int,
-        dither: int,
-        label: str,
-    ) -> Optional[CompressionCandidate]:
-        """量子化して候補を生成します。"""
-        quantized = self._quantize_image(working_img, colors, method, dither, label)
-        if quantized is None:
-            return None
-        return self._build_candidate(reference_img, quantized, label)
-
-    def _trim_candidate_bytes(self, candidates: List[CompressionCandidate]) -> None:
-        """最小サイズ候補とDIRECT候補以外の out_bytes を空にしてメモリを解放します。"""
-        if len(candidates) <= 2:
-            return
-        best_idx = min(range(len(candidates)), key=lambda i: candidates[i].out_size)
-        for i, c in enumerate(candidates):
-            if i != best_idx and c.label != "RGB_DIRECT_SAVE":
-                object.__setattr__(c, "out_bytes", b"")
-
-    def _decode_candidate_bytes(self, image_bytes: bytes) -> Image.Image:
-        """PNGバイト列を RGB 画像へ戻します。"""
         try:
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                return image.convert("RGB")
-        except Exception as e:
-            raise RuntimeError(f"圧縮結果の再読込に失敗しました: {e}") from e
-
-    def _iter_palette_steps(self) -> Iterable[int]:
-        """試行する色数を返します。"""
-        for colors in self.config.palette_colors_steps:
-            yield max(self.config.quantize_colors_min, min(int(colors), self.config.quantize_colors_max))
-
-    def _get_quantize_methods(self) -> List[Tuple[str, int]]:
-        """利用可能な量子化方式を返します。"""
-        methods: List[Tuple[str, int]] = []
-
-        if self.config.quantize_enable_libimagequant and features.check_feature("libimagequant"):
-            methods.append(("LIBIMAGEQUANT", int(Image.Quantize.LIBIMAGEQUANT)))
-
-        methods.append(("FASTOCTREE", self.config.quantize_method))
-
-        if img_supports_mediancut_rgb():
-            methods.append(("MEDIANCUT", int(Image.Quantize.MEDIANCUT)))
-            methods.append(("MAXCOVERAGE", int(Image.Quantize.MAXCOVERAGE)))
-
-        unique_methods: List[Tuple[str, int]] = []
-        seen_method_ids = set()
-        for label, method in methods:
-            if method in seen_method_ids:
-                continue
-            seen_method_ids.add(method)
-            unique_methods.append((label, method))
-
-        return unique_methods
-
-    def _get_dither_modes(self) -> List[Tuple[str, int]]:
-        """試行するディザ設定を返します。"""
-        modes: List[Tuple[str, int]] = []
-
-        if self.config.quantize_use_dither:
-            modes.append(("FLOYDSTEINBERG", int(Image.Dither.FLOYDSTEINBERG)))
-        if self.config.quantize_try_without_dither:
-            modes.append(("NONE", int(Image.Dither.NONE)))
-        if not modes:
-            modes.append(("FLOYDSTEINBERG", int(Image.Dither.FLOYDSTEINBERG)))
-
-        return modes
-
-    def _quantize_image(
-        self,
-        img: Image.Image,
-        colors: int,
-        method: int,
-        dither: int,
-        label: str,
-    ) -> Optional[Image.Image]:
-        """量子化を実行し、失敗時は None を返します。"""
-        try:
-            return img.quantize(colors=colors, method=method, dither=dither)
-        except Exception as e:
-            logger.warning("量子化に失敗しました: %s, error=%s", label, e)
-            return None
-
-    def _build_candidate(
-        self,
-        source_img: Image.Image,
-        encoded_img: Image.Image,
-        label: str,
-    ) -> Optional[CompressionCandidate]:
-        """圧縮候補を生成して返します。"""
-        try:
-            out_bytes = self.png_encoder.save_png_bytes(encoded_img)
-            mean_abs_diff, rms_diff, large_diff_ratio = self.quality_judge.measure_visual_difference(
-                source_img,
-                out_bytes,
+            process = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
             )
         except Exception as e:
-            logger.warning("圧縮候補の生成に失敗しました: %s, error=%s", label, e)
-            return None
+            raise RuntimeError(f"pngquant の起動に失敗しました: {e}") from e
 
-        logger.info(
-            "候補評価: %s, size=%s bytes, mean_abs_diff=%.4f, rms=%.4f, large_diff_ratio=%.5f",
-            label,
-            f"{len(out_bytes):,}",
-            mean_abs_diff,
-            rms_diff,
-            large_diff_ratio,
-        )
+        if process.stdout.strip():
+            logger.info("pngquant stdout: %s", process.stdout.strip())
+        if process.stderr.strip():
+            logger.info("pngquant stderr: %s", process.stderr.strip())
 
-        return CompressionCandidate(
-            label=label,
-            out_bytes=out_bytes,
-            out_size=len(out_bytes),
-            mean_abs_diff=mean_abs_diff,
-            rms_diff=rms_diff,
-            large_diff_ratio=large_diff_ratio,
-        )
-
-    def _select_best_candidate(
-        self,
-        candidates: Sequence[CompressionCandidate],
-        input_size: int,
-    ) -> Tuple[CompressionCandidate, str]:
-        """視覚品質優先で最適候補を選択します。"""
-        live = [c for c in candidates if c.out_bytes]
-        strict_candidates = [c for c in live if self.quality_judge.is_strictly_acceptable(c)]
-        relaxed_candidates = [c for c in live if self.quality_judge.is_relaxed_acceptable(c)]
-
-        strict_best = min(strict_candidates, key=lambda c: c.out_size) if strict_candidates else None
-        relaxed_best = min(relaxed_candidates, key=lambda c: c.out_size) if relaxed_candidates else None
-        direct_candidate = self._find_direct_candidate(live)
-
-        if strict_best is not None:
-            strict_reduction = 1.0 - (strict_best.out_size / float(input_size))
-            if strict_reduction >= self.config.target_reduction:
-                return strict_best, "STRICT"
-            return strict_best, "STRICT_VISUAL_PRIORITY"
-
-        if self.config.enable_relaxed_profile and relaxed_best is not None:
-            return relaxed_best, "RELAXED"
-
-        if direct_candidate is not None:
-            return direct_candidate, "DIRECT_SAVE_FALLBACK"
-
-        if relaxed_best is not None:
-            return relaxed_best, "RELAXED_FALLBACK"
-
-        return min(live, key=lambda c: c.out_size), "MIN_SIZE_FALLBACK"
-
-    def _find_direct_candidate(self, candidates: Sequence[CompressionCandidate]) -> Optional[CompressionCandidate]:
-        """直接保存候補を返します。"""
-        return next((candidate for candidate in candidates if candidate.label == "RGB_DIRECT_SAVE"), None)
-
-    def _log_selection_result(
-        self,
-        input_size: int,
-        output_path: Path,
-        best_candidate: CompressionCandidate,
-        profile_label: str,
-        direct_candidate: Optional[CompressionCandidate],
-        pass_count: int,
-    ) -> None:
-        """採用結果をログ出力します。"""
-        reduction_vs_input = 1.0 - (best_candidate.out_size / float(input_size))
-
-        if reduction_vs_input >= self.config.target_reduction:
-            logger.info(
-                "目標達成: %s [%s] で保存しました: %s (reduction_vs_input=%.1f%%, passes=%s)",
-                best_candidate.label,
-                profile_label,
-                output_path,
-                reduction_vs_input * 100.0,
-                pass_count,
+        if process.returncode != 0:
+            raise RuntimeError(
+                "pngquant の実行に失敗しました: "
+                f"returncode={process.returncode}, input={input_path}, output={output_path}, stderr={process.stderr.strip()}"
             )
-        else:
-            logger.warning(
-                "目標未達: %s [%s] を採用しました: %s (target=%.1f%%, actual_vs_input=%.1f%%, passes=%s)",
-                best_candidate.label,
-                profile_label,
-                output_path,
-                self.config.target_reduction * 100.0,
-                reduction_vs_input * 100.0,
-                pass_count,
-            )
-
-        if direct_candidate is None or direct_candidate.out_size <= 0:
-            return
-
-        reduction_vs_transformed = 1.0 - (best_candidate.out_size / float(direct_candidate.out_size))
-        logger.info(
-            "圧縮比較: direct_after_last_pass=%s bytes -> selected=%s bytes (reduction_vs_transformed=%.1f%%)",
-            f"{direct_candidate.out_size:,}",
-            f"{best_candidate.out_size:,}",
-            reduction_vs_transformed * 100.0,
-        )
 
 
 # =========================
@@ -996,18 +544,19 @@ class ImageProcessor:
         self.padder = CanvasPadder(config)
         self.font_resolver = FontResolver(config)
         self.title_renderer = TitleRenderer(config, self.font_resolver)
-        self.png_encoder = PngEncoder(config)
-        self.quality_judge = VisualQualityJudge(config)
-        self.compression_optimizer = CompressionOptimizer(config, self.png_encoder, self.quality_judge)
+        self.compressor = PngQuantCompressor(config)
 
     def process(self, input_path: Path, output_path: Path) -> None:
         """画像を読み込み、整形し、圧縮して保存します。"""
         image = self.loader.load_png_as_rgb(input_path)
         image = self.padder.pad_to_16_9(image)
         image = self.title_renderer.draw_title(image)
-        self.compression_optimizer.compress_and_save(image, input_path, output_path)
+        self.compressor.compress_and_save(image, input_path, output_path)
 
 
+# =========================
+# CLI
+# =========================
 def main() -> int:
     """CLIエントリポイントです。"""
     setup_logging()
@@ -1040,10 +589,14 @@ def main() -> int:
             out_size = output_path.stat().st_size
             in_size = input_path.stat().st_size
             reduction = 1.0 - (out_size / float(in_size))
-            logger.info("全工程完了: Original=%s -> Result=%s (%.1f%% reduction)", f"{in_size:,}", f"{out_size:,}", reduction * 100.0)
+            logger.info(
+                "全工程完了: Original=%s -> Result=%s (%.2f%% reduction)",
+                f"{in_size:,}",
+                f"{out_size:,}",
+                reduction * 100.0,
+            )
 
         completed = True
-
     except Exception as e:
         logger.error("処理中にエラーが発生しました: %s", e, exc_info=True)
         return EXIT_ERROR
