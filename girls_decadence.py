@@ -197,7 +197,7 @@ class AppConfig:
     relaxed_max_mean_abs_diff: float = 1.80
     relaxed_max_rms_diff: float = 3.60
     relaxed_max_large_diff_ratio: float = 0.0100
-    enable_relaxed_profile: bool = False
+    enable_relaxed_profile: bool = True
 
     large_diff_threshold: int = 8
 
@@ -922,16 +922,16 @@ class CompressionOptimizer:
             strict_reduction = 1.0 - (strict_best.out_size / float(input_size))
             if strict_reduction >= self.config.target_reduction:
                 return strict_best, "STRICT"
+            # 目標未達 — relaxed候補がより小さければそちらを採用
+            if relaxed_best is not None and relaxed_best.out_size < strict_best.out_size:
+                return relaxed_best, "RELAXED_UPGRADE"
             return strict_best, "STRICT_VISUAL_PRIORITY"
 
-        if self.config.enable_relaxed_profile and relaxed_best is not None:
+        if relaxed_best is not None:
             return relaxed_best, "RELAXED"
 
         if direct_candidate is not None:
             return direct_candidate, "DIRECT_SAVE_FALLBACK"
-
-        if relaxed_best is not None:
-            return relaxed_best, "RELAXED_FALLBACK"
 
         return min(live, key=lambda c: c.out_size), "MIN_SIZE_FALLBACK"
 
